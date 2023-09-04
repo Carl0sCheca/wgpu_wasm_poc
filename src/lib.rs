@@ -13,6 +13,8 @@ use winit::{
 
 use std::time::Duration;
 
+use parry2d::bounding_volume::BoundingVolume;
+
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
@@ -135,30 +137,13 @@ pub async fn run() {
                             },
                         ..
                     } => match key {
-                        VirtualKeyCode::W => {
-                            // state.transform.position.y += 0.1;
-                            state.actions[0] = true;
-                        }
-                        VirtualKeyCode::S => {
-                            // state.transform.position.y -= 0.1;
-                            state.actions[2] = true;
-                        }
-                        VirtualKeyCode::A => {
-                            // state.transform.position.x -= 0.1;
-                            state.actions[1] = true;
-                        }
-                        VirtualKeyCode::D => {
-                            // state.transform.position.x += 0.1;
-                            state.actions[3] = true;
-                        }
-                        VirtualKeyCode::Q => {
-                            // state.transform.rotation.z -= 1.0;
-                            state.actions[4] = true;
-                        }
-                        VirtualKeyCode::E => {
-                            // state.transform.rotation.z += 1.0;
-                            state.actions[5] = true;
-                        }
+                        VirtualKeyCode::C => state.collision.2 = !state.collision.2,
+                        VirtualKeyCode::W => state.actions[0] = true,
+                        VirtualKeyCode::S => state.actions[2] = true,
+                        VirtualKeyCode::A => state.actions[1] = true,
+                        VirtualKeyCode::D => state.actions[3] = true,
+                        VirtualKeyCode::Q => state.actions[4] = true,
+                        VirtualKeyCode::E => state.actions[5] = true,
                         VirtualKeyCode::R => {
                             state.zoom = if state.zoom > 0.0 {
                                 state.zoom - 0.1
@@ -246,6 +231,11 @@ struct State {
     // indices: Vec<u16>,
     mouse_pos: nalgebra_glm::Vec3,
     renders: Vec<render::Render>,
+    collision: (
+        Vec<transform::Transform>,
+        Vec<parry2d::bounding_volume::Aabb>,
+        bool,
+    ),
 }
 
 impl State {
@@ -371,7 +361,7 @@ impl State {
         let transform = {
             let mut t = transform::Transform::new();
             t.label = Some("transform".to_string());
-            t.translate(&nalgebra_glm::vec3(400.0, 400.0, 0.0));
+            t.translate(&nalgebra_glm::vec3(250.0, 200.0, 0.0));
             // t.rotate(&nalgebra_glm::vec3(0.0, 0.0, -45.0));
             std::rc::Rc::new(std::cell::RefCell::new(t))
         };
@@ -418,6 +408,16 @@ impl State {
             // MAP LAYER 2
             map::generate_render(
                 2,
+                &map,
+                &device,
+                &queue,
+                &camera_bind_group_layout,
+                camera_bind_group.clone(),
+                &surface_format,
+            ),
+            // MAP LAYER 4 (COLLISION)
+            map::generate_render(
+                3,
                 &map,
                 &device,
                 &queue,
@@ -878,6 +878,50 @@ impl State {
             speed: Duration::from_millis(1000 / 15),
         };
 
+        let map_size = map.size.clone();
+
+        let mut map_data = vec![];
+        if let map::Layers::TileLayer { data, .. } = &map.layers[3] {
+            for i in (0..(map_size.0 * map_size.1) as usize)
+                .step_by(map_size.0 as usize)
+                .rev()
+            {
+                map_data.extend_from_slice(&data[i..(i as u32 + map_size.0) as usize])
+            }
+        }
+
+        let collision_transforms = (0..map_size.0 as i32)
+            .flat_map(|x: i32| {
+                let map_data = map_data.clone();
+                (0..map_size.1 as i32).map(move |y| {
+                    let mut t = transform::Transform::new();
+                    t.translate(&nalgebra_glm::vec3(
+                        x as f32 * map.tile_size.0 as f32 * 2.0,
+                        y as f32 * map.tile_size.1 as f32 * 2.0,
+                        0.0,
+                    ));
+                    t.label = Some(format!("{}", x + (y * map_size.1 as i32)).to_string());
+                    if map_data.len() > 0 {
+                        t.index = map_data[(x + (y * map_size.0 as i32)) as usize];
+                        t.flip_x = 1;
+                    }
+                    t
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut cuboids_aabb = vec![];
+        for i in 0..collision_transforms.len() {
+            if collision_transforms[i].index == -1 {
+                continue;
+            }
+            let cuboid = parry2d::shape::Cuboid::new(nalgebra_glm::vec2(16.0, 16.0));
+            let pos = collision_transforms[i].position.xy();
+            let iso = nalgebra::Isometry2::translation(pos.x, pos.y);
+
+            cuboids_aabb.push(cuboid.aabb(&iso));
+        }
+
         Self {
             window,
             surface,
@@ -909,6 +953,7 @@ impl State {
             mouse_pos: nalgebra_glm::vec3(0.0, 0.0, 0.0),
             renders,
             instances,
+            collision: (collision_transforms, cuboids_aabb, false),
         }
     }
 
@@ -991,7 +1036,24 @@ impl State {
 
             let transform_position = transform.position.clone();
             let running = if self.actions[6] { 4.0 } else { 1.0 };
-            transform.translate(&(transform_position + (direction * dt as f32 * 100.0 * running)));
+
+            let new_position = transform_position + (direction * dt as f32 * 100.0 * running);
+
+            let player = parry2d::shape::Cuboid::new(nalgebra_glm::vec2(8.0, 8.0));
+            let pos_p = new_position.clone().xy();
+            let player_position = nalgebra::Isometry2::translation(pos_p.x, pos_p.y);
+            let player_aabb = player.aabb(&player_position);
+
+            let mut collision = false;
+            for cuboid in self.collision.1.iter() {
+                if cuboid.intersects(&player_aabb) {
+                    collision = true;
+                }
+            }
+
+            if !collision {
+                transform.translate(&new_position);
+            }
 
             if !self.actions[0] && !self.actions[1] && !self.actions[2] && !self.actions[3] {
                 self.animation.offset = 190;
@@ -1037,7 +1099,7 @@ impl State {
             bytemuck::cast_slice(&[self.camera_uniform]),
         );
 
-        self.renders[3].update_transform(
+        self.renders[4].update_transform(
             bytemuck::cast_slice(&[self.transform.as_ref().borrow().to_raw()]),
             &mut self.queue,
         );
@@ -1047,7 +1109,7 @@ impl State {
             .iter()
             .map(|x| x.as_ref().borrow().to_raw())
             .collect::<Vec<_>>();
-        self.renders[4].update_transform(bytemuck::cast_slice(&instance_data), &mut self.queue);
+        self.renders[5].update_transform(bytemuck::cast_slice(&instance_data), &mut self.queue);
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -1084,8 +1146,11 @@ impl State {
             self.renders[0].draw(&mut _render_pass);
             self.renders[1].draw(&mut _render_pass);
             self.renders[2].draw(&mut _render_pass);
-            self.renders[3].draw(&mut _render_pass);
+            if self.collision.2 {
+                self.renders[3].draw(&mut _render_pass);
+            }
             self.renders[4].draw(&mut _render_pass);
+            self.renders[5].draw(&mut _render_pass);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
