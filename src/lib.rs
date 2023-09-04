@@ -468,7 +468,7 @@ impl State {
                             ));
                             t.label = Some(format!("{}", x + (y * map_size.1 as i32)).to_string());
                             if map_data.len() > 0 {
-                                t.index = map_data[(x + (y * map_size.0 as i32)) as usize] - 1;
+                                t.index = map_data[(x + (y * map_size.0 as i32)) as usize];
                                 t.flip_x = 1;
                             }
                             std::rc::Rc::new(std::cell::RefCell::new(t))
@@ -707,7 +707,6 @@ impl State {
                             t.label = Some(format!("{}", x + (y * map_size.1 as i32)).to_string());
                             if map_data.len() > 0 {
                                 t.index = map_data[(x + (y * map_size.0 as i32)) as usize];
-                                t.index -= 1;
                                 t.flip_x = 1;
                             }
                             std::rc::Rc::new(std::cell::RefCell::new(t))
@@ -946,7 +945,6 @@ impl State {
                             t.label = Some(format!("{}", x + (y * map_size.1 as i32)).to_string());
                             if map_data.len() > 0 {
                                 t.index = map_data[(x + (y * map_size.0 as i32)) as usize];
-                                t.index -= 1;
                                 t.flip_x = 1;
                             }
                             std::rc::Rc::new(std::cell::RefCell::new(t))

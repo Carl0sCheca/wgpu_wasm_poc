@@ -130,7 +130,7 @@ pub async fn load_map(path_data: &str) -> Map {
                                 .as_array()
                                 .unwrap()
                                 .iter()
-                                .map(|x| x.as_i64().unwrap() as i32)
+                                .map(|x| (x.as_i64().unwrap() as i32) - 1)
                                 .collect::<Vec<i32>>(),
                         });
                     }
