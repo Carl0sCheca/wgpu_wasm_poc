@@ -1,6 +1,9 @@
 use wgpu::util::DeviceExt;
 
 #[cfg(target_arch = "wasm32")]
+use web_sys::{Request, RequestInit, RequestMode, Response};
+
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
@@ -8,18 +11,6 @@ use wasm_bindgen_futures::*;
 
 #[cfg(target_arch = "wasm32")]
 use web_sys::Blob;
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(raw_module = "./wasm-utils/utils.js")]
-extern "C" {
-    fn read_json(path: &str) -> JsValue;
-}
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(raw_module = "./wasm-utils/utils.js")]
-extern "C" {
-    fn read_image(path: &str) -> JsValue;
-}
 
 #[derive(Debug)]
 pub struct TileSet {
@@ -73,12 +64,19 @@ pub async fn load_map(path_data: &str) -> Map {
     let json_file = {
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "wasm32")] {
-                let promise_as_jsvalue = read_json(path_data);
-                let promise = js_sys::Promise::from(promise_as_jsvalue);
-                let future = JsFuture::from(promise);
-                let result: Result<JsValue, JsValue> = future.await;
-                let jsvalue = result.clone().unwrap();
-                serde_wasm_bindgen::from_value::<serde_json::Value>(jsvalue).unwrap()
+                let mut opts = RequestInit::new();
+                opts.method("GET");
+                opts.mode(RequestMode::Cors);
+
+                let url = format!("{}", path_data);
+                let request = Request::new_with_str_and_init(&url, &opts).unwrap();
+                let window = web_sys::window().unwrap();
+                let resp_value = JsFuture::from(window.fetch_with_request(&request))
+                    .await
+                    .unwrap();
+                let resp: Response = resp_value.dyn_into().unwrap();
+                let json = JsFuture::from(resp.json().unwrap()).await.unwrap();
+                serde_wasm_bindgen::from_value::<serde_json::Value>(json).unwrap()
             } else {
                 let data  = std::fs::read_to_string(path_data).unwrap();
                 serde_json::from_str::<serde_json::Value>(data.as_str()).unwrap()
@@ -95,12 +93,21 @@ pub async fn load_map(path_data: &str) -> Map {
     let spritesheet = {
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "wasm32")] {
-                let promise_as_jsvalue = read_image(filename.as_str());
-                let promise = js_sys::Promise::from(promise_as_jsvalue);
-                let future = JsFuture::from(promise);
-                let result: Result<JsValue, JsValue> = future.await;
-                let jsvalue = result.unwrap();
-                let blob: Blob = jsvalue.into();
+                let mut opts = RequestInit::new();
+                opts.method("GET");
+                opts.mode(RequestMode::Cors);
+
+                let url = format!("{}", filename.as_str());
+                let request = Request::new_with_str_and_init(&url, &opts).unwrap();
+                let window = web_sys::window().unwrap();
+                let resp_value = JsFuture::from(window.fetch_with_request(&request))
+                    .await
+                    .unwrap();
+                let resp: Response = resp_value.dyn_into().unwrap();
+                let blob_response = JsFuture::from(resp.blob().unwrap()).await.unwrap();
+
+                let blob: Blob = blob_response.into();
+
                 let array_buffer_promise: JsFuture = blob.array_buffer().into();
                 let array_buffer: JsValue = array_buffer_promise.await.unwrap();
                 js_sys::Uint8Array::new(&array_buffer).to_vec()
